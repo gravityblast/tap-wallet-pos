@@ -59,21 +59,15 @@ export const walletsCounted = (count) => ({
 });
 
 export const LOADING_WALLET = 'LOADING_WALLET';
-export const loadingWallet = (index) => ({
+export const loadingWallet = () => ({
   type: LOADING_WALLET,
-  index
 });
 
 export const WALLET_LOADED = 'WALLET_LOADED';
-export const walletLoaded = (index, address, nonce, name, keycardAddress, balance, icon, maxTxValue) => ({
+export const walletLoaded = (nonce, balance, maxTxValue) => ({
   type: WALLET_LOADED,
-  index,
-  address,
   nonce,
-  name,
-  keycardAddress,
   balance,
-  icon,
   maxTxValue,
 });
 
@@ -139,7 +133,6 @@ export const loadOwner = () => {
         const owner = accounts[0];
         // web3.eth.personal.signMessagePinless("hello", owner)
         dispatch(ownerLoaded(owner))
-        dispatch(loadWallets(owner))
         dispatch(loadOwnerBalance(owner))
       })
       .catch((err) => {
@@ -162,46 +155,56 @@ export const loadOwnerBalance = (owner) => {
   }
 }
 
-export const loadWallets = (owner) => {
-  return (dispatch) => {
-    dispatch(loadingWallets())
-    dispatch(countingWallets())
-    return TapWalletFactory.methods.ownerWalletsCount(owner).call()
-      .then((count) => {
-        dispatch(walletsCounted(count));
-        for (var i = 0; i < count; i++) {
-          dispatch(loadWallet(owner, i))
-        };
-      })
-      .catch((err) => {
-        const params = new URLSearchParams(document.location.search);
-        const web3Retry = "r";
-        if (!params.get(web3Retry)) {
-          params.set(web3Retry, "1");
-          document.location.search = params.toString();
+export const REQUESTING_PAYMENT = "REQUESTING_PAYMENT";
+export const requestingPayment = () => ({
+  type: REQUESTING_PAYMENT,
+});
+
+export const PAYMENT_REQUESTED = "PAYMENT_REQUESTED";
+export const paymentRequested = () => ({
+  type: PAYMENT_REQUESTED,
+});
+
+export const signMetaTx = (walletContract, nonce) => {
+  return (dispatch, getState) => {
+    const to = getState().owner;
+    const value = 10;
+    const message = web3.utils.soliditySha3(nonce, to, value);
+
+    try {
+      dispatch(requestingPayment())
+      web3.eth.personal.signMessagePinless(message, "0x0000000000000000000000000000000000000000", "", async (err, sig) => {
+        if (err) {
+          alert("err " + err)
         } else {
-          dispatch(web3Error(err));
+          const signedHash = await web3.eth.accounts.hashMessage(message);
+          const requestPayment = walletContract.methods.requestPayment(signedHash, sig, nonce, to, value);
+          const estimatedGas = await requestPayment.estimateGas();
+          const receipt = await requestPayment.send({
+            gas: estimatedGas
+          });
+          dispatch(paymentRequested())
         }
-      })
+      });
+    } catch(err) {
+      alert(err)
+    }
   }
-};
+}
 
-export const loadWallet = (owner, index) => {
+export const loadWallet = (walletAddress) => {
   return async (dispatch) => {
-    dispatch(loadingWallet(index))
+    dispatch(loadingWallet())
 
-    const address = await TapWalletFactory.methods.ownersWallets(owner, index).call();
     const jsonInterface = TapWallet.options.jsonInterface;
     const walletContract = new EmbarkJS.Blockchain.Contract({
       abi: jsonInterface,
-      address: address,
+      address: walletAddress,
     });
-    walletContract.address = address;
+    walletContract.address = walletAddress;
 
-    const name = await walletContract.methods.name().call();
-    const balance = await web3.eth.getBalance(address);
-    const keycardAddress = await walletContract.methods.keycard().call();
     const nonce = await walletContract.methods.nonce().call();
+    const balance = await web3.eth.getBalance(walletAddress);
     const maxTxValue = await walletContract.methods.settings().call();
 
     let icon = "";
@@ -209,147 +212,37 @@ export const loadWallet = (owner, index) => {
       icon = String.fromCodePoint(name);
     } catch(e){}
 
-    dispatch(walletLoaded(index, address, nonce, name, keycardAddress, balance, icon, maxTxValue))
+    dispatch(walletLoaded(nonce, balance, maxTxValue))
+    dispatch(signMetaTx(walletContract, nonce))
   };
 }
 
-export const NEW_WALLET_SELECT_ICON = "NEW_WALLET_SELECT_ICON";
-export const newWalletSelectIcon = (icon) => {
-  return {
-    type: NEW_WALLET_SELECT_ICON,
-    icon
-  }
-}
-
-export const NEW_WALLET_CANCEL = "NEW_WALLET_CANCEL";
-export const newWalletCancel = () => {
-  return {
-    type: NEW_WALLET_CANCEL
-  }
-}
-
-export const CREATING_WALLET = "CREATING_WALLET";
-export const creatingWallet = (index, icon) => ({
-  type: CREATING_WALLET,
-  index,
-  icon
-});
-
-export const WALLET_CREATED = "WALLET_CREATED";
-export const walletCreated = (receipt) => ({
-  type: WALLET_CREATED
-});
-
-export const WALLET_CREATION_ERROR = "WALLET_CREATION_ERROR";
-export const walletCreationError = (error) => ({
-  type: WALLET_CREATION_ERROR,
-  error
-});
-
-export const NEW_WALLET_FORM_KEYCARD_ADDRESS_CHANGED = "NEW_WALLET_FORM_KEYCARD_ADDRESS_CHANGED";
-export const newWalletFormKeycardAddressChanged = (address) => ({
-  type: NEW_WALLET_FORM_KEYCARD_ADDRESS_CHANGED,
-  address
-});
-
-export const NEW_WALLET_FORM_MAX_TX_VALUE_CHANGED = "NEW_WALLET_FORM_MAX_TX_VALUE_CHANGED";
-export const newWalletFormMaxTxValueChanged = (value) => ({
-  type: NEW_WALLET_FORM_MAX_TX_VALUE_CHANGED,
-  value
-});
-
-export const createWallet = () => {
-  return async (dispatch, getState) => {
-    const state = getState();
-    const icon = state.newWalletForm.icon;
-    const maxTxValue = web3.utils.toWei(state.newWalletForm.maxTxValue);
-    const keycardAddress = state.newWalletForm.keycardAddress || emptyAddress;
-    const codePoint = icon.codePointAt(0);
-    const name = "0x" + codePoint.toString(16);
-    const create = TapWalletFactory.methods.create(name, keycardAddress, maxTxValue);
-    const walletIndex = state.wallets.length;
-
-    try {
-      const estimatedGas = await create.estimateGas()
-      create.send({ from: state.owner, gas: estimatedGas })
-        .then((receipt) => {
-          console.log(receipt)
-          dispatch(walletCreated(receipt))
-          dispatch(newWalletCancel())
-          dispatch(loadWallets(state.owner))
-        })
-        .catch((err) => {
-          dispatch(web3Error(err))
-          dispatch(walletCreationError(err))
-        });
-      dispatch(creatingWallet(walletIndex, icon))
-    } catch(err) {
-      dispatch(web3Error(err))
-      dispatch(walletCreationError(err))
-    }
-  }
-}
-
-export const SELECT_WALLET = 'SELECT_WALLET';
-export const selectWallet = (index) => ({
-  type: SELECT_WALLET,
-  index
-});
-
-export const CLOSE_SELECTED_WALLET = 'CLOSE_SELECTED_WALLET';
-export const closeSelectedWallet = (index) => ({
-  type: CLOSE_SELECTED_WALLET,
-});
-
-export const TOPPING_UP_WALLET = 'TOPPING_UP_WALLET';
-export const toppingUpWallet = (index) => ({
-  type: TOPPING_UP_WALLET,
-  index
-});
-
-export const ERROR_TOPPING_UP_WALLET = 'ERROR_TOPPING_UP_WALLET';
-export const errorToppingUpWallet = (index) => ({
-  type: ERROR_TOPPING_UP_WALLET,
-  index
-});
-
-export const WALLET_TOPPED_UP = 'WALLET_TOPPED_UP';
-export const walletToppedUp = (index) => ({
-  type: WALLET_TOPPED_UP,
-  index
-});
-
-export const topUpWallet = (index, address, value) => {
-  return async (dispatch, getState) => {
-    const owner = getState().owner;
-    const tx = {
-      from: owner,
-      to: address,
-      value: web3.utils.toWei("0.001"),
-    }
-
-    const gas = await web3.eth.estimateGas(tx);
-    tx.gas = gas;
-
-    dispatch(toppingUpWallet(index));
-    web3.eth.sendTransaction(tx)
-      .then(() => {
-        dispatch(loadWallet(owner, index))
-        dispatch(walletToppedUp(index))
-      })
-      .catch((err) => {
-        dispatch(errorToppingUpWallet(index))
-      })
-  }
-};
-
 export const KEYCARD_DISCOVERED = "KEYCARD_DISCOVERED";
-export const keycardDiscovered = (sig) => {
-  //FIXME: put a random message
-  const address = web3.eth.accounts.recover("0x112233", sig)
-  return {
-    type: KEYCARD_DISCOVERED,
-    address,
+export const keycardDiscovered = (address) => ({
+  type: KEYCARD_DISCOVERED,
+  address,
+});
+
+export const FINDING_WALLET = "FINDING_WALLET";
+export const findingWallet = () => ({
+  type: FINDING_WALLET,
+});
+
+export const WALLET_FOUND = "WALLET_FOUND";
+export const walletFound = (address) => ({
+  type: WALLET_FOUND,
+  address,
+});
+
+export const findWallet = (keycardAddress) => {
+  return async (dispatch) => {
+    dispatch(findingWallet());
+    TapWalletFactory.methods.keycardsWallets(keycardAddress).call()
+      .then((address) => {
+        dispatch(walletFound(address))
+        dispatch(loadWallet(address))
+      })
+      .catch((err) => dispatch(web3Error(err)))
   }
 }
 
@@ -363,7 +256,10 @@ export const signMessagePinless = (message) => {
         if (err) {
           dispatch(web3Error(err))
         } else {
-          dispatch(keycardDiscovered(sig));
+          //FIXME: put a random message
+          const address = web3.eth.accounts.recover("0x112233", sig)
+          dispatch(keycardDiscovered(address));
+          dispatch(findWallet(address));
         }
       })
     } catch(err) {
